@@ -94,7 +94,7 @@ static int EIO_Authenticate(eio_req *req)
         //fprintf(stderr, "ldap_count_entries = %i\n", ldap_count_entries(ldap, searchResult));
         auth_req->authenticated = (search_success == LDAP_SUCCESS) && (ldap_count_entries(ldap, searchResult) > 0);
         free(filter);
-        free(searchResult);
+        ldap_msgfree(searchResult);
     } else {
       auth_req->authenticated = false;
     }
