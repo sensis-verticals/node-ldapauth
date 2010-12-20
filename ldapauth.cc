@@ -57,6 +57,7 @@ struct auth_request
   char *username;
   char *password;
   char *groups;
+  int timeout_secs;
   // Callback function
   Persistent<Function> callback;
   // Result
@@ -75,34 +76,48 @@ static int EIO_Authenticate(eio_req *req)
   // thread anyway, it's just simpler to call the rest of the calls
   // synchronously.
   
-  // Connect to LDAP server
-  LDAP *ldap = ldap_open(auth_req->host, auth_req->port);
+  // Connect to LDAP server (use ldap_init instead of ldap_open, so that we can set the timeout)
+  LDAP *ldap = ldap_init(auth_req->host, auth_req->port);
+  //fprintf(stderr, "ldap_init called\n");
+  struct timeval timeout;
+  timeout.tv_sec = auth_req->timeout_secs;
+  timeout.tv_usec = 0;
+  ldap_set_option(ldap, LDAP_OPT_TIMEOUT, &timeout);
+  ldap_set_option(ldap, LDAP_OPT_NETWORK_TIMEOUT, &timeout);
+  //fprintf(stderr, "timeouts set\n");
+
   if (ldap == NULL) {
+    //fprintf(stderr, "ldap thing is null\n");
     auth_req->connected = false;
     auth_req->authenticated = false;
   } else {
+    //fprintf(stderr, "going for the bind\n");
     // Bind with credentials, passing result into auth_request struct
     int ldap_result = ldap_simple_bind_s(ldap, auth_req->username, auth_req->password);
     //fprintf(stderr, "authenticated with ldap\n");
     if (ldap_result == LDAP_SUCCESS) {
-        char *filter;
-        asprintf(&filter, "(member=%s)", auth_req->username);
-        //fprintf(stderr, "Using this filter: %s\n", filter);
-        LDAPMessage *searchResult;
-        int search_success = ldap_search_ext_s(ldap, auth_req->groups, LDAP_SCOPE_SUBTREE, filter, NULL, 0, NULL, NULL, NULL, LDAP_NO_LIMIT, &searchResult);
-        //fprintf(stderr, "search done with search_success = %i, LDAP_SUCCESS = %i\n", search_success, LDAP_SUCCESS);
-        //fprintf(stderr, "ldap_count_entries = %i\n", ldap_count_entries(ldap, searchResult));
-        auth_req->authenticated = (search_success == LDAP_SUCCESS) && (ldap_count_entries(ldap, searchResult) > 0);
-        free(filter);
-        ldap_msgfree(searchResult);
+      auth_req->connected = true;
+      char *filter;
+      asprintf(&filter, "(member=%s)", auth_req->username);
+      //fprintf(stderr, "Using this filter: %s\n", filter);
+      LDAPMessage *searchResult;
+      int search_success = ldap_search_ext_s(ldap, auth_req->groups, LDAP_SCOPE_SUBTREE, filter, NULL, 0, NULL, NULL, NULL, LDAP_NO_LIMIT, &searchResult);
+      //fprintf(stderr, "search done with search_success = %i, LDAP_SUCCESS = %i\n", search_success, LDAP_SUCCESS);
+      //fprintf(stderr, "ldap_count_entries = %i\n", ldap_count_entries(ldap, searchResult));
+      auth_req->authenticated = (search_success == LDAP_SUCCESS) && (ldap_count_entries(ldap, searchResult) > 0);
+      free(filter);
+      ldap_msgfree(searchResult);
+    } else if (ldap_result == LDAP_TIMEOUT) {
+      auth_req->connected = false;
+      auth_req->authenticated = false;
     } else {
+      //fprintf(stderr, "ldap result was %i\n", ldap_result);
       auth_req->authenticated = false;
     }
     // Disconnect
     ldap_unbind(ldap);
 
     //fprintf(stderr, "leaving the ldap parts now with auth_req->authenticated = %i\n", auth_req->authenticated);
-    auth_req->connected = true;
   }
   
   return 0;
@@ -137,13 +152,14 @@ static Handle<Value> Authenticate(const Arguments& args)
   HandleScope scope;
   
   // Validate args.
-  if (args.Length() < 6)      return THROW("Required arguments: ldap_host, ldap_port, username, password, groups, callback");
+  if (args.Length() < 7)      return THROW("Required arguments: ldap_host, ldap_port, username, password, groups, timeout_secs, callback");
   if (!args[0]->IsString())   return THROW("ldap_host should be a string");
-  if (!args[1]->IsInt32())    return THROW("ldap_port should be a string");
+  if (!args[1]->IsInt32())    return THROW("ldap_port should be a number");
   if (!args[2]->IsString())   return THROW("username should be a string");
   if (!args[3]->IsString())   return THROW("password should be a string");
   if (!args[4]->IsString())   return THROW("groups should be a string");
-  if (!args[5]->IsFunction()) return THROW("callback should be a function");
+  if (!args[5]->IsInt32()) return THROW("timeout_secs should be a number");
+  if (!args[6]->IsFunction()) return THROW("callback should be a function");
 
   // Input params.
   String::Utf8Value host(args[0]);
@@ -151,7 +167,8 @@ static Handle<Value> Authenticate(const Arguments& args)
   String::Utf8Value username(args[2]);
   String::Utf8Value password(args[3]);
   String::Utf8Value groups(args[4]);
-  Local<Function> callback = Local<Function>::Cast(args[5]);
+  int timeout_secs = args[5]->Int32Value();
+  Local<Function> callback = Local<Function>::Cast(args[6]);
 
   
   // Store all parameters in auth_request struct, which shall be passed across threads.
@@ -161,10 +178,11 @@ static Handle<Value> Authenticate(const Arguments& args)
   auth_req->username = strdup(*username);
   auth_req->password = strdup(*password);
   auth_req->groups = strdup(*groups);
+  auth_req->timeout_secs = timeout_secs;
   auth_req->callback = Persistent<Function>::New(callback);
   
   // Use libeio to invoke EIO_Authenticate() in background thread pool
-  // and call EIO_AfterAuthententicate in the foreground when done
+  // and call EIO_AfterAuthenticate in the foreground when done
   eio_custom(EIO_Authenticate, EIO_PRI_DEFAULT, EIO_AfterAuthenticate, auth_req);
   ev_ref(EV_DEFAULT_UC);
 

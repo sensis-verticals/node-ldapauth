@@ -22,7 +22,7 @@ You need to add ldapauth.node to your application.
 
     var ldapauth = require('./ldapauth'); // path to ldapauth.node
 
-    ldapauth.authenticate('some.host', 389 /*port*/, 'someuser', 'somepassword', 'ou=SomeGroup,o=GROUPS'
+    ldapauth.authenticate('some.host', 389 /*port*/, 'someuser', 'somepassword', 'ou=SomeGroup,o=GROUPS', 5 /*timeout in seconds*/
       function(err, result) {
         if (err) {
           print('Error');
